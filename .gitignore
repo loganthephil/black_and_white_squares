@@ -129,3 +129,10 @@ dmypy.json
 .pyre/
 
 poetry.lock
+
+# Pycharm
+.idea/
+black_and_white_squares.iml
+modules.xml
+profile_settings.xml
+vcs.xml
