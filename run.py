@@ -23,6 +23,8 @@ class BasicPropositions:
         self.data = data
     def __repr__(self):
         return f"A.{self.data}"
+    def __lt__(self, other):
+        self.data < other.data
 
 
 @constraint.none_of(E)
@@ -32,16 +34,42 @@ class FalseProposition:
         self.data = data
     def __repr__(self):
         return f"A.{self.data}"
+    def __lt__(self, other):
+        self.data < other.data
 
 
-def generate_2d_array(rows, columns, data):
+def generate_2d_array(columns, rows, data):
     array = []
-    for i in range(rows):
+    for i in range(columns):
         row = []
-        for j in range(columns):
+        for j in range(rows):
             row.append(BasicPropositions(f"{data}({i},{j})"))
         array.append(row)
     return array
+
+def generate_3d_array(x, y, z, data):
+    array = []
+    for i in range(x):
+        row = []
+        for j in range(y):
+            column = []
+            for k in range(z):
+                column.append(BasicPropositions(f"{data}({i},{j},{k})"))
+            row.append(column)
+        array.append(row)
+    return array
+
+def flip_coords(coords:tuple):
+    return coords[1], coords[0]
+
+def rotate_matrix_clockwise(matrix):
+    new_matrix = []
+    for y in range(len(matrix[0])):
+        new_matrix.append([])
+        for x in range(len(matrix)-1, -1, -1):
+            new_matrix[y].append(matrix[x][y])
+    return new_matrix
+
 
 def iff(a, b) -> NNF:
     return (a & b) | (~a & ~b)
@@ -50,26 +78,38 @@ false = FalseProposition("false")
 true = ~false
 
 class BlackAndWhiteSquares:
-    def __init__(self, rows, cols):
-        self.ROWS = rows * 2 + 1
-        self.COLUMNS = cols * 2 + 1
+    def __init__(self, cols, rows, board):
+        self.ROWS_TOTAL = rows * 2 + 1
+        self.COLUMNS_TOTAL = cols * 2 + 1
+
+        self.ROWS_TILES = rows
+        self.COLUMNS_TILES = cols
+
+        self.ROWS_POINTS = rows + 1
+        self.COLUMNS_POINTS = cols + 1
+        self.MAX_DIST = self.ROWS_POINTS*self.COLUMNS_POINTS
+
+        self.board = board
 
         # Propositions
         self.q = BasicPropositions("q")  # True when drawn line is a valid solution
 
-        self.l = generate_2d_array(self.ROWS, self.COLUMNS, "l")
-        self.w = generate_2d_array(self.ROWS, self.COLUMNS, "w")
-        self.b = generate_2d_array(self.ROWS, self.COLUMNS, "b")
-        self.t = generate_2d_array(self.ROWS, self.COLUMNS, "t")
-        self.j = generate_2d_array(self.ROWS, self.COLUMNS, "j")
-        self.k = generate_2d_array(self.ROWS, self.COLUMNS, "k")
-        self.i = generate_2d_array(self.ROWS, self.COLUMNS, "i")
-        self.p = generate_2d_array(self.ROWS, self.COLUMNS, "p")
-        self.s = generate_2d_array(self.ROWS, self.COLUMNS, "s")
-        self.e = generate_2d_array(self.ROWS, self.COLUMNS, "e")
-        self.c = generate_2d_array(self.ROWS, self.COLUMNS, "c")
+        self.w = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "w") # White square
+        self.b = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "b") # Black square
+        self.t = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "t") # Empty square
+        self.j = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "j") # Black square is touching
+        self.k = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "k") # White square is touching
+        self.i = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "i") # Empty  touching a black square and a white square
+        self.p = generate_2d_array(self.COLUMNS_TILES, self.ROWS_TILES, "p") # Touching a black square
+        self.s = generate_2d_array(self.COLUMNS_POINTS, self.ROWS_POINTS, "s") # Starting point
+        self.e = generate_2d_array(self.COLUMNS_POINTS, self.ROWS_POINTS, "e") # Ending point
+        self.l = generate_2d_array(self.COLUMNS_POINTS, self.ROWS_POINTS, "l") # Line segment
+        self.c = generate_3d_array(self.COLUMNS_POINTS, self.ROWS_POINTS, 2, "c") # Connected - z coordinate is direction of connection {0:up, 1:right}
+        self.d = generate_3d_array(self.MAX_DIST, self.COLUMNS_POINTS, self.ROWS_POINTS, "d") # Distance
 
         self.build_constraints()
+
+
 
 
     def build_constraints(self):
@@ -78,198 +118,260 @@ class BlackAndWhiteSquares:
         constraint.add_exactly_one(E, *self.s)
         constraint.add_exactly_one(E, *self.e)
 
+        #   There must always be at least one white and black square.
         constraint.add_at_least_one(E, *self.w)
         constraint.add_at_least_one(E, *self.b)
 
+        #   There can be at most one empty space.
         constraint.add_at_most_one(E, *self.t)
 
-        # Create variables to store NNF formulas that can be added to during the loop.
-        empty_touching_both = false
-        white_touching_black = false
-        invalid_start = true
-        invalid_end = true
-        invalid_line = true
-        for x in range(self.ROWS):
-            for y in range(self.COLUMNS):
-                #   A square is “touching” a black square only when a black square is two x or y coordinates
-                #   away (no diagonals), and on the x or y coordinate between them there is no line segment.
-                #   j(x,y) ↔ ( b(x,y+2) ∧ ¬l(x,y+1) ) ∨ ( b(x+2,y) ∧ ¬l(x+1,y) ) ∨ ( b(x,y-2) ∧  ¬l(x,y-1) ) ∨ ( b(x-2,y) ∧ ¬l(x-1,y) )
-                up      = self.b[x][y+2] & ~self.l[x][y+1] if y + 2 < self.ROWS else false
-                right   = self.b[x+2][y] & ~self.l[x+1][y] if x + 2 < self.COLUMNS else false
-                down    = self.b[x][y-2] & ~self.l[x][y-1] if y - 2 >= 0 else false
-                left    = self.b[x-2][y] & ~self.l[x-1][y] if x - 2 >= 0 else false
+        #   There can be at most one line with any given distance to the start.
+        for i in range(self.MAX_DIST):
+            constraint.add_at_most_one(E, *self.d[i])
+
+        do_static_board = True if self.board else False
+        if do_static_board:
+            static_s = flip_coords(self.board[0][0])
+            static_e = flip_coords(self.board[0][1])
+            E.add_constraint(self.s[static_s[0]][static_s[1]])
+            E.add_constraint(self.e[static_e[0]][static_e[1]])
+            del self.board[0]
+            self.board = rotate_matrix_clockwise(self.board)
+
+        for x in range(self.COLUMNS_TILES):
+            for y in range(self.ROWS_TILES):
+                if do_static_board:
+                    tile = self.board[x][y]
+                    if tile == "W":
+                        E.add_constraint(self.w[x][y])
+                    elif tile == "B":
+                        E.add_constraint(self.b[x][y])
+                    else:
+                        E.add_constraint(self.t[x][y])
+
+
+                #   A square is “touching” a black square only when a black square is a single x or y coordinate
+                #   away (no diagonals) and there is no connection between line segments between them.
+                #   j(x,y) ↔ ( b(x,y+1) ∧ ¬c(x,y+1,1) ) ∨ ( b(x+1,y) ∧ ¬c(x+1,y,1) ) ∨ ( b(x,y-1) ∧ ¬c(x,y,1) ) ∨ ( b(x-1,y) ∧ ¬c(x,y,1) )
+                up = self.b[x][y + 1] & ~self.c[x][y+1][1] if y + 1 < self.ROWS_TILES else false
+                right = self.b[x + 1][y] & ~self.c[x+1][y][0] if x + 1 < self.COLUMNS_TILES else false
+                down = self.b[x][y - 1] & ~self.c[x][y][1] if y - 1 >= 0 else false
+                left = self.b[x - 1][y] & ~self.c[x][y][0] if x - 1 >= 0 else false
                 E.add_constraint(iff(self.j[x][y], up | right | down | left))
 
                 #   Same idea applies for white squares k(x,y).
-                up      = self.w[x][y + 2] & ~self.l[x][y + 1] if y + 2 < self.ROWS else false
-                right   = self.w[x + 2][y] & ~self.l[x + 1][y] if x + 2 < self.COLUMNS else false
-                down    = self.w[x][y - 2] & ~self.l[x][y - 1] if y - 2 >= 0 else false
-                left    = self.w[x - 2][y] & ~self.l[x - 1][y] if x - 2 >= 0 else false
+                up = self.w[x][y + 1] & ~self.c[x][y+1][1] if y + 1 < self.ROWS_TILES else false
+                right = self.w[x + 1][y] & ~self.c[x+1][y][0] if x + 1 < self.COLUMNS_TILES else false
+                down = self.w[x][y - 1] & ~self.c[x][y][1] if y - 1 >= 0 else false
+                left = self.w[x - 1][y] & ~self.c[x][y][0] if x - 1 >= 0 else false
                 E.add_constraint(iff(self.k[x][y], up | right | down | left))
 
-                #   An empty space is only touching a black square and a white square when the point has neither
+                #   An empty tile is only touching a black square and a white square when the tile has neither
                 #   white nor black on it and the previous constraints for touching black and white squares are met.
-                #   e(x,y) ↔ ( ¬b(x,y) ∧ ¬w(x,y) ) ∧ j(x,y) ∧ k(x,y)
-                E.add_constraint(
-                    iff(self.i[x][y], ~self.b[x][y] & ~self.w[x][y] & self.j[x][y] & self.k[x][y]))
+                #   i(x,y) ↔ t(x,y) ∧ j(x,y) ∧ k(x,y)
+                E.add_constraint(iff(self.i[x][y], self.t[x][y] & self.j[x][y] & self.k[x][y]))
 
                 #   Similar idea applies for white squares touching blacks squares.
-                #   p(x,y) ↔ ¬b(x,y) ∧ w(x,y) ∧ j(x,y)
-                E.add_constraint(
-                    iff(self.p[x][y], ~self.b[x][y] & self.w[x][y] & self.j[x][y]))
+                #   p(x,y) ↔ w(x,y) ∧ j(x,y)
+                E.add_constraint(iff(self.p[x][y], self.w[x][y] & self.j[x][y]))
 
-                # A square can be exclusively black or white, not both.
-                # ( w(x,y) → ¬ b(x,y) ) ∧ ( b(x,y) → ¬ w(x,y) )
+                #   A square can be exclusively black or white, not both.
+                #   ( w(x,y) → ¬ b(x,y) ) ∧ ( b(x,y) → ¬ w(x,y) )
                 E.add_constraint((self.w[x][y] >> ~self.b[x][y]) & (self.b[x][y] >> ~self.w[x][y]))
 
-                # Any point on the line must either be on the starting
-                # position or be on a valid grid space for a line segment.
-                # l(x,y) → s(x,y) ∨ c(x,y)
-                E.add_constraint(self.l[x][y] >> self.s[x][y] | self.c[x][y])
+                #   A solution is only solved when no empty spaces are touching black and white squares,
+                #   and no white squares are touching black squares.
+                #   q ↔ ¬( i(0,0) ∨ i(1,0) ∨ i(2,0) ∨ … ∨ i(3,3) ) ∧ ¬( p(0,0) ∨ p(1,)0 ∨ p(2,0) ∨ … ∨ p(3,3) )
+                E.add_constraint(iff(self.q, ~self.i[x][y] & ~self.p[x][y]))
 
-                # A grid space is a valid route for the line to take if the line
-                # has somewhere to go after being added to the grid space.
-                # if x%2==1:
-                #     up      = false
-                #     down    = false
-                # else:
-                #     up      = ~self.l[x][y + 1] if y + 1 < self.ROWS else false
-                #     down    = ~self.l[x][y - 1] if y - 1 >= 0 else false
-                # if y%2==1:
-                #     right   = false
-                #     left    = false
-                # else:
-                #     right   = ~self.l[x + 1][y] if x + 1 < self.COLUMNS else false
-                #     left    = ~self.l[x - 1][y] if x - 1 >= 0 else false
-                # E.add_constraint(self.c[x][y] >> up | right | down | left)
+                #   A tile is empty if it doesn't contain a white or black square.
+                #   t(x, y) ↔ ¬b(x, y) ∧ ¬w(x, y)
+                E.add_constraint(iff(self.t[x][y], ~self.b[x][y] & ~self.w[x][y]))
 
-                # A grid space can’t be both the starting point and ending point.
+        for x in range(self.COLUMNS_POINTS):
+            for y in range(self.ROWS_POINTS):
+                # A point can't be both the starting point and ending point.
                 # ¬s(x,y) ∨ ¬e(x,y)
                 E.add_constraint(~self.s[x][y] | ~self.e[x][y])
 
                 # There must always be a line segment at the starting point, and ending point.
+                #   s(x,y) → l(x,y)
+                #   e(x,y) → l(x,y)
                 E.add_constraint(self.s[x][y] >> self.l[x][y])
                 E.add_constraint(self.e[x][y] >> self.l[x][y])
 
-                # Any point on the line that isn’t the start or end point must be connected to two other points of the line.
-                # In other words, the line must be a single continuous line from start to end without branching paths.
-                up = self.l[x][y + 1] if y + 1 < self.ROWS else false
-                right = self.l[x + 1][y] if x + 1 < self.COLUMNS else false
-                down = self.l[x][y - 1] if y - 1 >= 0 else false
-                left = self.l[x - 1][y] if x - 1 >= 0 else false
-                one_connection =    ((up & ~right & ~down & ~left) | (~up & right & ~down & ~left) |
-                                     (~up & ~right & down & ~left) | (~up & ~right & ~down & left))
+                #   A point cannot be connected to a non-existent point "out-of-bounds".
+                #   ¬c(x,4,0)
+                #   ¬c(4,y,1)
+                if y + 1 >= self.ROWS_POINTS: E.add_constraint(~self.c[x][y][0])
+                if x + 1 >= self.COLUMNS_POINTS: E.add_constraint(~self.c[x][y][1])
 
-                two_connections =   ((up & right & ~down & ~left) | (up & ~right & down & ~left) |
-                                     (up & ~right & ~down & left) | (~up & right & down & ~left) |
-                                     (~up & right & ~down & left) | (~up & ~right & down & left))
-                E.add_constraint(self.l[x][y] >> ((self.s[x][y] | self.e[x][y]) & one_connection) |
-                                 (~self.s[x][y] & ~self.e[x][y] & two_connections))
+                #   A point being connected to another point implies that there is a line segment at both ends of the connection.
+                if y + 1 < self.ROWS_POINTS: E.add_constraint(self.c[x][y][0] >> (self.l[x][y] & self.l[x][y+1]))
+                if x + 1 < self.COLUMNS_POINTS: E.add_constraint(self.c[x][y][1] >> (self.l[x][y] & self.l[x+1][y]))
 
-                # Add to variables storing NNF formulas for invalid start and end points.
-                if (x%2==0 and y%2==1) or (x%2==1 and y%2==0) or (x%2==1 and y%2==1):
-                    invalid_start = invalid_start & ~self.s[x][y]
-                    invalid_end = invalid_end & ~self.e[x][y]
+                #   Any point on the line that isn’t the start or end point must be connected to two other points of the line.
+                #   In other words, the line must be a single continuous line from start to end without branching paths.
+                up = self.c[x][y][0] if y + 1 < self.ROWS_POINTS else false
+                right = self.c[x][y][1] if x + 1 < self.COLUMNS_POINTS else false
+                down = self.c[x][y - 1][0] if y - 1 >= 0 else false
+                left = self.c[x - 1][y][1] if x - 1 >= 0 else false
+                one_connection = ((up & ~right & ~down & ~left) | (~up & right & ~down & ~left) |
+                                  (~up & ~right & down & ~left) | (~up & ~right & ~down & left))
 
-                # Add to variables storing NNF formulas:
-                if x%2==1 and y%2==1: # Inside tile.
-                    #print("RAN")
-                    empty_touching_both = empty_touching_both | self.i[x][y]
-                    white_touching_black = white_touching_black | self.p[x][y]
-                    invalid_line = invalid_line & ~self.l[x][y]
+                two_connections = ((up & right & ~down & ~left) | (up & ~right & down & ~left) |
+                                   (up & ~right & ~down & left) | (~up & right & down & ~left) |
+                                   (~up & right & ~down & left) | (~up & ~right & down & left))
+                E.add_constraint(self.l[x][y] >> (((self.s[x][y] | self.e[x][y]) & one_connection) |
+                                 (~self.s[x][y] & ~self.e[x][y] & two_connections)))
 
-                    # A grid space is empty if the space does not contain a white or black square.
-                    E.add_constraint(iff(self.t[x][y], ~self.w[x][y] & ~self.b[x][y]))
-                else: # Outside tile.
-                    #   A grid space can only contain a white square if it is the inside of a tile.
-                    #   ¬w(0,0) ∧ ¬w(0,1) ∧ … ∧ ¬w(0,6) ∧ ¬w(1,0) ∧ ¬w(1,2) ∧ ¬w(1,4) ∧ ¬w(1,6) ∧ … ∧ ¬w(6,6)
-                    E.add_constraint(~self.w[x][y])
+                #   The distance to the starting point at start must 0.
+                #   s(x,y) → d(x,y,0)
+                E.add_constraint(self.s[x][y] >> self.d[0][x][y])
 
-                    #   Same applies for black squares.
-                    E.add_constraint(~self.b[x][y])
+                #   At any line segment there must be another line segment connected
+                #   with a distance less than the specified line segment.
+                for i in range(1, self.MAX_DIST):
+                    up = self.c[x][y][0] & self.d[i-1][x][y+1] if y + 1 < self.ROWS_POINTS else false
+                    right = self.c[x][y][1] & self.d[i-1][x+1][y] if x + 1 < self.COLUMNS_POINTS else false
+                    down = self.c[x][y-1][0] & self.d[i-1][x][y-1] if y - 1 >= 0 else false
+                    left = self.c[x-1][y][1] & self.d[i-1][x-1][y] if x - 1 >= 0 else false
+                    E.add_constraint(self.d[i][x][y] >> (up | right | down | left))
 
-                    #   Same applies for empty tiles.
-                    E.add_constraint(~self.t[x][y])
+                #   Every point with a line segment must have a distance to the start.
+                any_distance = false
+                for i in range(self.MAX_DIST):
+                    any_distance = any_distance | self.d[i][x][y]
+                E.add_constraint(self.l[x][y] >> any_distance)
 
-        #   A solution is only solved when no empty spaces are touching black and white squares,
-        #   and no white squares are touching black squares:
-        E.add_constraint(iff(self.q, ~empty_touching_both & ~white_touching_black))
+                #   Every point with a distance can only have one distance at that point.
+                for i in range(self.MAX_DIST):
+                    any_other_distance = false
+                    for j in range(self.MAX_DIST):
+                        if j != i: any_other_distance = any_other_distance | self.d[j][x][y]
+                    E.add_constraint(self.d[i][x][y] >> ~any_other_distance)
+
+        # The solution must be valid.
         E.add_constraint(self.q)
-
-        # The starting point must be on an "intersection" of the line area and cannot be within a tile.
-        # ¬s(0,1) ∧ ¬s(0,3) ∧ ¬s(0,5) ∧ ¬s(1,0) ∧ ¬s(1,2) ∧ ¬s(1,4) ∧ ¬s(1,6) ∧ … ∧ ¬s(6,3) ∧ ¬s(6,5)
-        E.add_constraint(invalid_start)
-        # Same applies for the ending point.
-        E.add_constraint(invalid_end)
-
-        #   A line segment can never be on the inside of a tile.
-        #   ¬l(1,1) ∧ ¬l(1,3) ∧ ¬l(1,5) ∧ ¬l(3,1) ∧ ¬l(3,3) ∧ ¬l(3,5) ∧ ¬l(5,1) ∧ ¬l(5,3) ∧ ¬l(5,5)
-        E.add_constraint(invalid_line)
 
         return E
 
-def print_grid(s: dict, rows, cols):
+def print_grid(s: dict, cols: int, rows: int):
     ROWS = rows * 2 + 1
     COLUMNS = cols * 2 + 1
 
-    grid = [["   " for j in range(COLUMNS)] for i in range(ROWS)]
+    grid = [["   " for j in range(ROWS)] for i in range(COLUMNS)]
 
     for key, value in s.items():
         if len(key.data) < 2:
             continue
 
         if value:
-            # print(f"{key}: {value}")
-            prop = key.data[0]
-            x = int(key.data[2])
-            y = int(key.data[4])
-            if prop == "s":
-                grid[x][y] = " S "
-            elif prop == "e":
-                grid[x][y] = " E "
-            elif prop == "w":
-                grid[x][y] = " W "
-            elif prop == "b":
-                grid[x][y] = " B "
-            elif prop == "l" and grid[x][y] == "   ":
-                if x%2 == 0 and y%2 == 1: grid[x][y] = " | "
-                elif x%2 == 1 and y%2 == 0: grid[x][y] = "---"
-                else: grid[x][y] = " * "
 
-    for y in range(ROWS):
+            prop = key.data[0]
+            if prop == "":
+                print(f"{key}")
+
+            if prop != "d":
+                x = int(key.data[2])
+                y = int(key.data[4])
+                if prop == "s":
+                    grid[2 * x][2 * y] = " S "
+                elif prop == "e":
+                    grid[2 * x][2 * y] = " E "
+                elif prop == "w":
+                    grid[2 * x + 1][2 * y + 1] = " W "
+                elif prop == "b":
+                    grid[2 * x + 1][2 * y + 1] = " B "
+                elif prop == "l" and grid[2 * x][2 * y] == "   ":
+                    grid[2 * x][2 * y] = " * "
+                elif prop == "c":
+                    z = int(key.data[6])
+                    if z == 1: grid[2 * x + 1][2 * y] = "---"
+                    else: grid[2 * x][2 * y + 1] = " | "
+
+
+    for y in range(ROWS-1, -1, -1):
         for x in range(COLUMNS):
             print(grid[x][y], end="")
         print()
 
 
-
-
-# Build an example full theory for your setting and return it.
+#   Build an example full theory for your setting and return it.
 #
-#  There should be at least 10 variables, and a sufficiently large formula to describe it (>50 operators).
-#  This restriction is fairly minimal, and if there is any concern, reach out to the teaching staff to clarify
-#  what the expectations are.
-def example_theory(rows = 3, cols = 3):
-    bws_class = BlackAndWhiteSquares(rows, cols)
+#   There should be at least 10 variables, and a sufficiently large formula to describe it (>50 operators).
+#   This restriction is fairly minimal, and if there is any concern, reach out to the teaching staff to clarify
+#   what the expectations are.
+def example_theory(cols = 3, rows = 3, board = None):
+    bws_class = BlackAndWhiteSquares(cols, rows, board)
     return E
 
 
 if __name__ == "__main__":
-    rows = 3
-    cols = 3
+    mode = 1
+    mode_dict = {
+        0 : "Solved board",
+        1 : "Possible lines"
+    }
+    print(f"Mode: {mode_dict[mode]}")
 
-    T = example_theory(3, 3)
-    # Don't compile until you're finished adding all your constraints!
-    T = T.compile()
-    # After compilation (and only after), you can check some of the properties
-    # of your model:
-    print("\nSatisfiable: %s" % T.satisfiable())
-    solution = T.solve()
-    #print("   Solution: %s" % solution)
-    print_grid(solution, rows, cols)
+    # Find any solved model:
+    if mode == 0:
+        #   Modify for different board sizes:
+        cols = 3
+        rows = 3
 
-    # DECREASE GRID SIZE BEFORE RUNNING
-    #print("# Solutions: %d" % count_solutions(T))
+        # T = example_theory(cols, rows)
+        T = example_theory(cols, rows)
+        # Don't compile until you're finished adding all your constraints!
+        T = T.compile()
+        # After compilation (and only after), you can check some of the properties
+        # of your model:
+        print("\nSatisfiable: %s" % T.satisfiable())
+        solution = T.solve()
+        # print("   Solution: %s" % solution)
+        if solution: print_grid(solution, cols, rows)
+
+        # Count solutions (Runs only if grid size is >= 2x2):
+        if cols <= 2 and rows <= 2: print("# Solutions: %d" % count_solutions(T))
+
+    # Solutions with static board:
+    elif mode == 1:
+        #   Do not modify board size in this mode.
+        cols = 3
+        rows = 3
+
+        #   Modify matrix for different static board configurations:
+        #   First tuple is starting point location
+        #   Second tuple is ending point location
+        board = [
+            [(3,3), (1,0)],
+            ["W", "W", "B"],
+            ["W", "B", "W"],
+            ["W", "B", "W"]
+        ]
+
+
+        T = example_theory(cols, rows, board)
+        T = T.compile()
+
+        print("\nSatisfiable: %s" % T.satisfiable())
+
+        #   Seemingly inefficient way to list all the solutions to the board, but
+        #   alternative of using T.models() was insanely slow in comparison:
+        num_solutions = count_solutions(T)
+        solutions = []
+        for i in range(num_solutions):
+            solution = T.solve()
+            while (solution in solutions):
+                solution = T.solve()
+            solutions.append(solution)
+            print_grid(solution, cols, rows)
+            print(f"Solution # {i+1}/{num_solutions}")
+            print("-------------------------")
+
+        # Count solutions:
+        print(f"# Solutions: {num_solutions}")
 
 
     # print("\nVariable likelihoods:")
