@@ -394,7 +394,7 @@ if __name__ == "__main__":
         solution = T.solve()
         if solution: print_grid(solution, cols, rows, print_if_solved=True)
 
-        # Count solutions (Runs only if grid size is >= 2x2):
+        # Count solutions (Runs only if grid size is <= 2x2):
         if cols <= 2 and rows <= 2: print("# Solutions: %d" % count_solutions(T))
 
 
